@@ -29,7 +29,7 @@ public class ParserSqlScript implements SqlScript {
     /**
      * The sql statements contained in this script.
      */
-    protected final List<SqlStatement> sqlStatements = new ArrayList<>();
+    protected final List<SqlStatement> sqlStatements = new LinkedList<>();
 
     private int sqlStatementCount;
 
@@ -47,7 +47,7 @@ public class ParserSqlScript implements SqlScript {
     protected final Parser parser;
     private final boolean mixed;
     private boolean parsed;
-
+    private boolean inMemory = true;
 
 
 
@@ -70,19 +70,27 @@ public class ParserSqlScript implements SqlScript {
         this.mixed = mixed;
     }
 
+
+    private static long getFreeMemory() {
+        Runtime runtime = Runtime.getRuntime();
+        return runtime.freeMemory();
+    }
+
     protected void parse() {
         try (SqlStatementIterator sqlStatementIterator = parser.parse(resource)) {
             boolean transactionalStatementFound = false;
             while (sqlStatementIterator.hasNext()) {
                 SqlStatement sqlStatement = sqlStatementIterator.next();
-
-
-
-                    this.sqlStatements.add(sqlStatement);
-
-
-
-
+                if (inMemory) {
+                    long freeMemory = getFreeMemory();
+                    if (freeMemory <= 300_000) {
+                        LOG.warn("Running out of memory for migration " + resource.getRelativePath() + ", migrating from disk read");
+                        sqlStatements.clear();
+                        inMemory = false;
+                    } else {
+                        sqlStatements.add(sqlStatement);
+                    }
+                }
                 sqlStatementCount++;
 
                 if (sqlStatement.canExecuteInTransaction()) {
@@ -127,33 +135,52 @@ public class ParserSqlScript implements SqlScript {
     public SqlStatementIterator getSqlStatements() {
         validate();
 
+        if (inMemory) {
+            final Iterator<SqlStatement> iterator = sqlStatements.iterator();
+            return new SqlStatementIterator() {
+                @Override
+                public void close() {
+                }
 
+                @Override
+                public boolean hasNext() {
+                    return iterator.hasNext();
+                }
 
+                @Override
+                public SqlStatement next() {
+                    return iterator.next();
+                }
 
+                @Override
+                public void remove() {
+                    iterator.remove();
+                }
+            };
+        } else {
+            SqlStatementIterator sqlStatementIterator = parser.parse(resource);
+            return new SqlStatementIterator() {
+                @Override
+                public void close() {
+                    sqlStatementIterator.close();
+                }
 
+                @Override
+                public boolean hasNext() {
+                    return sqlStatementIterator.hasNext();
+                }
 
+                @Override
+                public SqlStatement next() {
+                    return sqlStatementIterator.next();
+                }
 
-        final Iterator<SqlStatement> iterator = sqlStatements.iterator();
-        return new SqlStatementIterator() {
-            @Override
-            public void close() {
-            }
+                @Override
+                public void remove() {
+                }
+            };
+        }
 
-            @Override
-            public boolean hasNext() {
-                return iterator.hasNext();
-            }
-
-            @Override
-            public SqlStatement next() {
-                return iterator.next();
-            }
-
-            @Override
-            public void remove() {
-                iterator.remove();
-            }
-        };
     }
 
     @Override
